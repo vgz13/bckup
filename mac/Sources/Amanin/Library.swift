@@ -398,7 +398,7 @@ struct ProjectsView: View {
     }
 }
 
-// MARK: - Sort downloads into a project's Assets folder
+// MARK: - Sort downloads into a project's MATERIAL folder
 
 struct DLItem: Identifiable, Hashable {
     var id: URL { url }
@@ -420,7 +420,7 @@ final class DownloadsModel: ObservableObject {
     @Published var items: [DLItem] = []
     @Published var days = 14
     @Published var targetProject = ""
-    @Published var subfolder = "Assets"
+    @Published var subfolder = ""
     @Published var moveOriginals = false
     @Published var busy = false
     @Published var message: String?
@@ -469,7 +469,10 @@ final class DownloadsModel: ObservableObject {
 
     func copy(_ selected: [DLItem]) {
         guard let app, let root = app.settings.primaryRoot, !targetProject.isEmpty, !selected.isEmpty else { return }
-        let destDir = URL(fileURLWithPath: root).appendingPathComponent(targetProject).appendingPathComponent(cleanName(subfolder).isEmpty ? "Assets" : cleanName(subfolder))
+        let projectDir = URL(fileURLWithPath: root).appendingPathComponent(targetProject)
+        let base = app.settings.assetLayout
+        let layout = AssetLayout(folder: cleanName(subfolder).isEmpty ? base.folder : cleanName(subfolder), split: base.split, byDevice: base.byDevice, names: base.names)
+        let destDir = projectDir.appendingPathComponent(layout.folder)
         let move = moveOriginals
         busy = true
         message = "Copying \(selected.count) items…"
@@ -486,7 +489,7 @@ final class DownloadsModel: ObservableObject {
                 }
                 var ok = true
                 for (src, rel) in sources {
-                    let target = destDir.appendingPathComponent(rel)
+                    let target = projectDir.appendingPathComponent(layout.rel(for: src, rel: rel))
                     let mtime = (try? src.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date()
                     // Already there with the same content: nothing to do.
                     if FileManager.default.fileExists(atPath: target.path),
@@ -529,7 +532,7 @@ struct DownloadsView: View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 10) {
                 Text("Sort downloads").font(.title.weight(.semibold))
-                Text("Put logos, music, briefs or client footage into a project folder. Files are only copied; originals go to the Bin only if you choose.")
+                Text("Put logos, music, briefs or client footage into a project's MATERIAL folder, sorted by type and by camera or phone. Files are only copied; originals go to the Bin only if you choose.")
                     .font(.callout).foregroundStyle(.secondary)
                     .lineLimit(2)
                 HStack(spacing: 10) {
@@ -608,7 +611,8 @@ struct DownloadsView: View {
                     }
                     .frame(minWidth: 160, maxWidth: 300)
                     Text("/").foregroundStyle(.secondary)
-                    TextField("Assets", text: $model.subfolder).frame(width: 90)
+                    TextField(app.settings.assetLayout.folder, text: $model.subfolder).frame(width: 110)
+                        .help("Folder inside the project. Files are sorted into a folder per type inside it.")
                     Spacer(minLength: 0)
                     if model.busy { ProgressView().controlSize(.small) }
                     Button(selection.isEmpty ? "Copy" : "Copy \(selection.count)") {

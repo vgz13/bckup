@@ -507,6 +507,7 @@ struct SuggestField: View {
 struct ProjectPanel: View {
     @EnvironmentObject var app: AppState
     @ObservedObject var job: OffloadJob
+    @State private var showRename = false
 
     var body: some View {
         Panel(title: "Project", symbol: "folder") {
@@ -520,19 +521,39 @@ struct ProjectPanel: View {
                     SuggestField(text: $job.project, placeholder: "Project / shoot name", suggestions: job.existingProjects)
                         .gridCellColumns(app.settings.useClientFolder ? 1 : 3)
                 }
-                GridRow {
-                    FieldLabel("Date")
-                    DatePicker("", selection: $job.date, displayedComponents: .date)
-                        .labelsHidden()
-                        .datePickerStyle(.field)
-                        .disabled(job.projectExists || app.settings.datePosition == .none)
-                    FieldLabel("Roll")
-                    TextField("Roll / card name", text: $job.roll)
-                        .textFieldStyle(.roundedBorder)
+                if job.asAssets {
+                    GridRow {
+                        FieldLabel("Date")
+                        DatePicker("", selection: $job.date, displayedComponents: .date)
+                            .labelsHidden()
+                            .datePickerStyle(.field)
+                            .fixedSize()
+                            .disabled(job.projectExists || app.settings.datePosition == .none)
+                            .gridCellColumns(app.settings.useClientFolder ? 3 : 3)
+                            .gridCellAnchor(.leading)
+                    }
+                } else {
+                    GridRow {
+                        FieldLabel("Date")
+                        DatePicker("", selection: $job.date, displayedComponents: .date)
+                            .labelsHidden()
+                            .datePickerStyle(.field)
+                            .disabled(job.projectExists || app.settings.datePosition == .none)
+                        FieldLabel("Roll")
+                        TextField("Roll / card name", text: $job.roll)
+                            .textFieldStyle(.roundedBorder)
+                    }
                 }
             }
             PathBreadcrumb(job: job)
+            HStack {
+                Spacer()
+                Button("Rename folders…") { showRename = true }
+                    .buttonStyle(.link)
+                    .font(.callout)
+            }
         }
+        .sheet(isPresented: $showRename) { RenameFoldersSheet().environmentObject(app) }
     }
 }
 
@@ -550,15 +571,17 @@ struct PathBreadcrumb: View {
     var body: some View {
         let parts = job.breadcrumb
         VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 4) {
-                ForEach(Array(parts.enumerated()), id: \.offset) { i, p in
-                    if i > 0 { Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary) }
-                    Text(p.text)
-                        .font(.callout.weight(p.isNew ? .semibold : .regular))
-                        .foregroundStyle(p.isNew ? Color.accentColor : .secondary)
-                        .lineLimit(1)
-                }
+            // One Text, so a long path wraps instead of pushing the window wider.
+            parts.enumerated().reduce(Text("")) { acc, item in
+                let (i, p) = item
+                let sep = i > 0 ? Text("  ›  ").foregroundColor(.secondary.opacity(0.6)) : Text("")
+                let part = Text(p.text)
+                    .fontWeight(p.isNew ? .semibold : .regular)
+                    .foregroundColor(p.isNew ? .accentColor : .secondary)
+                return acc + sep + part
             }
+            .font(.callout)
+            .fixedSize(horizontal: false, vertical: true)
             if job.projectExists {
                 Text("This project already exists; new files go into the same folder.").font(.caption).foregroundStyle(.secondary)
             } else if parts.contains(where: \.isNew) {
@@ -695,8 +718,71 @@ struct OptionsPanel: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             Divider()
-            Toggle("Split into Video / Photo / Audio folders", isOn: $job.separateByType)
+            Toggle("Save as assets in the \(job.settings.assetLayout.folder) folder", isOn: $job.asAssets)
+            Text(job.asAssets
+                 ? "For logos, music, briefs and client footage. Files are sorted into \(job.settings.splitMaterial ? "Video, Photo, Audio, Graphics, Documents and more" : "one folder")\(job.settings.groupByDevice && job.settings.splitMaterial ? ", with a folder per camera or phone" : "")."
+                 : "For camera cards. Turn on for loose files that aren't from a card.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if !job.asAssets {
+                Toggle("Split into Video / Photo / Audio folders", isOn: $job.separateByType)
+            }
         }
+    }
+}
+
+/// Edit every folder name BCKUP creates, from the card screen.
+struct RenameFoldersSheet: View {
+    @EnvironmentObject var app: AppState
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Folder names").font(.title2.weight(.semibold))
+            Form {
+                Section("Camera cards") {
+                    TextField("Video", text: $app.settings.videoFolder)
+                    TextField("Photo", text: $app.settings.photoFolder)
+                    TextField("Audio", text: $app.settings.audioFolder)
+                }
+                Section("Assets") {
+                    TextField("Assets folder", text: $app.settings.materialFolder)
+                    Toggle("Split into a folder per type", isOn: $app.settings.splitMaterial)
+                    Toggle("Folder per camera or phone (Video and Photo)", isOn: $app.settings.groupByDevice)
+                        .disabled(!app.settings.splitMaterial)
+                    ForEach(AssetCategory.allCases) { c in
+                        TextField(c.defaultName, text: Binding(
+                            get: { app.settings.materialNames[c.rawValue] ?? c.defaultName },
+                            set: { app.settings.materialNames[c.rawValue] = $0 }
+                        ))
+                        .help(c.examples)
+                        .disabled(!app.settings.splitMaterial)
+                    }
+                }
+            }
+            .formStyle(.grouped)
+            HStack {
+                Button("Reset to defaults") {
+                    let d = AppSettings()
+                    app.settings.videoFolder = d.videoFolder
+                    app.settings.photoFolder = d.photoFolder
+                    app.settings.audioFolder = d.audioFolder
+                    app.settings.materialFolder = d.materialFolder
+                    app.settings.splitMaterial = d.splitMaterial
+                    app.settings.groupByDevice = d.groupByDevice
+                    app.settings.materialNames = [:]
+                }
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+            Text("New names apply to folders made from now on. Folders already on your drives aren't renamed.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(20)
+        .frame(width: 460, height: 640)
     }
 }
 

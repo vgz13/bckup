@@ -35,6 +35,8 @@ pub struct JobForm {
     pub skip_existing: bool,
     pub check_mode: CheckMode,
     pub separate_by_type: bool,
+    #[serde(default)]
+    pub as_assets: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -311,6 +313,7 @@ fn make_spec(s: &Settings, f: &JobForm) -> OffloadSpec {
         skip_existing: f.skip_existing,
         check_mode: f.check_mode,
         cloud: if f.use_cloud && s.cloud_enabled { cloud_spec(s) } else { None },
+        assets: if f.as_assets { Some(s.asset_layout()) } else { None },
         mirror_prefix: None,
     }
 }
@@ -326,7 +329,7 @@ fn validation(s: &Settings, f: &JobForm) -> Option<String> {
     if util::clean_name(&f.project).is_empty() {
         return Some("Enter a project name".into());
     }
-    if util::clean_name(&f.roll).is_empty() {
+    if !f.as_assets && util::clean_name(&f.roll).is_empty() {
         return Some("Enter a roll name".into());
     }
     if f.use_cloud && s.cloud_enabled {
@@ -363,6 +366,7 @@ fn default_form(s: &Settings, scan: &CardScan, items: bool) -> JobForm {
         skip_existing: s.skip_existing,
         check_mode: s.check_mode,
         separate_by_type: s.separate_by_type,
+        as_assets: items,
     }
 }
 
@@ -694,7 +698,18 @@ fn get_job(st: State<Shared>, app: AppHandle, source: String) -> Option<JobDetai
                 levels.push(if c.is_empty() { "Client".into() } else { c.clone() });
             }
             levels.push(if pf.is_empty() { "Project".into() } else { pf.clone() });
-            if spec.separate_by_type {
+            if let Some(a) = &spec.assets {
+                levels.push(a.folder.clone());
+                if a.split {
+                    if let Some(sc) = &job.scan {
+                        let present: std::collections::HashSet<&str> = sc.files.iter().map(|f| scanner::asset_category(Path::new(&f.path))).collect();
+                        let names: Vec<String> = ASSET_CATEGORIES.iter().filter(|(k, _)| present.contains(k)).map(|(k, d)| a.names.get(*k).cloned().unwrap_or(d.to_string())).collect();
+                        if !names.is_empty() {
+                            levels.push(if names.len() > 4 { format!("{} …", names[..4].join(" · ")) } else { names.join(" · ") });
+                        }
+                    }
+                }
+            } else if spec.separate_by_type {
                 if let Some(sc) = &job.scan {
                     let r = scanner::route(&sc.files);
                     let kinds: Vec<String> = [FileKind::Video, FileKind::Photo, FileKind::Audio]
@@ -707,7 +722,9 @@ fn get_job(st: State<Shared>, app: AppHandle, source: String) -> Option<JobDetai
                     }
                 }
             }
-            levels.push(if spec.roll.is_empty() { "Roll".into() } else { spec.roll.clone() });
+            if spec.assets.is_none() {
+                levels.push(if spec.roll.is_empty() { "Roll".into() } else { spec.roll.clone() });
+            }
             let mut path = PathBuf::from(&base);
             let mut missing = false;
             for l in levels {
@@ -1071,6 +1088,7 @@ fn backup_project(st: State<Shared>, app: AppHandle, rel: String) -> Result<(), 
                 check_mode: CheckMode::Fast,
                 cloud: None,
                 mirror_prefix: Some(rel.clone()),
+                assets: None,
             };
             let plan = engine::plan(&st.catalog, &spec, &scan, &cancel, &sink)?;
             let mut r = engine::execute(&st.catalog, &plan, &cancel, &sink);

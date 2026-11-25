@@ -272,8 +272,16 @@ pub fn detect(files: &[CardFile]) -> String {
     }
 }
 
-/// Make and model from the EXIF of the first readable photo.
+/// The card's camera: EXIF of the first photo, else the metadata of the first clips.
 pub fn model(files: &[CardFile]) -> Option<String> {
+    if let Some(m) = photo_model(files) {
+        return Some(m);
+    }
+    files.iter().filter(|f| f.kind == FileKind::Video).take(3).find_map(|f| device_for(Path::new(&f.path)))
+}
+
+/// Make and model from the EXIF of the first readable photo.
+fn photo_model(files: &[CardFile]) -> Option<String> {
     let exts = ["jpg", "jpeg", "arw", "cr3", "cr2", "nef", "raf", "rw2", "orf", "dng", "heic", "hif", "pef", "srw"];
     for f in files.iter().filter(|f| exts.contains(&ext(Path::new(&f.rel)).as_str())).take(4) {
         let Ok(file) = std::fs::File::open(&f.path) else { continue };
@@ -337,4 +345,315 @@ fn majority<'a>(files: impl Iterator<Item = &'a CardFile>) -> Option<FileKind> {
         *c.entry(f.kind).or_default() += 1;
     }
     c.into_iter().max_by_key(|x| x.1).map(|x| x.0)
+}
+
+
+// MARK: - Assets: category, sidecar partner, device
+
+const GRAPHICS: &[&str] = &["png", "svg", "ai", "eps", "psd", "psb", "gif", "webp", "ico", "cdr", "sketch", "fig", "xd", "indd", "afdesign", "afphoto", "tga", "exr", "bmp"];
+const DOCUMENTS: &[&str] = &["pdf", "doc", "docx", "ppt", "pptx", "key", "xls", "xlsx", "csv", "txt", "rtf", "pages", "numbers", "md", "odt", "ods", "odp", "srt", "vtt"];
+const FONTS: &[&str] = &["ttf", "otf", "woff", "woff2", "ttc"];
+const PROJECT_FILES: &[&str] = &["prproj", "aep", "aepx", "drp", "drt", "fcpxml", "fcpbundle", "edl", "aaf", "mogrt", "cube", "3dl", "lut", "veg", "xml", "blend", "c4d"];
+const ARCHIVES: &[&str] = &["zip", "rar", "7z", "tar", "gz", "tgz", "bz2", "dmg", "iso"];
+
+pub fn asset_category(p: &Path) -> &'static str {
+    let e = ext(p);
+    let e = e.as_str();
+    if GRAPHICS.contains(&e) {
+        return "graphics";
+    }
+    if DOCUMENTS.contains(&e) {
+        return "documents";
+    }
+    if FONTS.contains(&e) {
+        return "fonts";
+    }
+    if PROJECT_FILES.contains(&e) {
+        return "projectFiles";
+    }
+    if ARCHIVES.contains(&e) {
+        return "archives";
+    }
+    match kind_of(e) {
+        FileKind::Video => "video",
+        FileKind::Photo => "photo",
+        FileKind::Audio => "audio",
+        _ => "other",
+    }
+}
+
+/// For a sidecar (C0001M01.XML, .THM, .SRT…), the clip or photo next to it whose name it starts with.
+pub fn sidecar_partner(p: &Path) -> Option<std::path::PathBuf> {
+    if kind_of(&ext(p)) != FileKind::Sidecar {
+        return None;
+    }
+    let stem = p.file_stem()?.to_string_lossy().to_uppercase();
+    let dir = p.parent()?;
+    std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).find(|c| {
+        let k = kind_of(&ext(c));
+        let s = c.file_stem().map(|x| x.to_string_lossy().to_uppercase()).unwrap_or_default();
+        (k == FileKind::Video || k == FileKind::Photo) && !s.is_empty() && stem.starts_with(&s)
+    })
+}
+
+static DEVICES: std::sync::Mutex<Option<HashMap<String, Option<String>>>> = std::sync::Mutex::new(None);
+
+/// A readable device name ("iPhone 15 Pro", "Sony ILCE-7M4", "Pixel", "DJI"…), or None.
+pub fn device_for(p: &Path) -> Option<String> {
+    let key = p.to_string_lossy().to_string();
+    if let Some(hit) = DEVICES.lock().unwrap().get_or_insert_with(HashMap::new).get(&key) {
+        return hit.clone();
+    }
+    let d = detect_device(p);
+    DEVICES.lock().unwrap().get_or_insert_with(HashMap::new).insert(key, d.clone());
+    d
+}
+
+fn detect_device(p: &Path) -> Option<String> {
+    match kind_of(&ext(p)) {
+        FileKind::Photo => {
+            if let Some((make, model)) = exif_make_model(p) {
+                return Some(pretty_device(make.as_deref(), &model));
+            }
+        }
+        FileKind::Video => {
+            if let Some((make, model)) = sony_xml(p).or_else(|| video_tags(p)) {
+                return Some(pretty_device(make.as_deref(), &model));
+            }
+        }
+        _ => {}
+    }
+    device_from_name(p)
+}
+
+fn exif_make_model(p: &Path) -> Option<(Option<String>, String)> {
+    let file = std::fs::File::open(p).ok()?;
+    let ex = exif::Reader::new().read_from_container(&mut std::io::BufReader::new(file)).ok()?;
+    let get = |t| ex.get_field(t, exif::In::PRIMARY).map(|f| f.display_value().to_string().trim_matches('"').trim().to_string());
+    let model = get(exif::Tag::Model).filter(|m| !m.is_empty())?;
+    Some((get(exif::Tag::Make).filter(|m| !m.is_empty()), model))
+}
+
+/// Sony writes <Device manufacturer="Sony" modelName="ILCE-7M4"/> into C0001M01.XML next to each clip.
+fn sony_xml(p: &Path) -> Option<(Option<String>, String)> {
+    let stem = p.file_stem()?.to_string_lossy().to_string();
+    for name in [format!("{stem}M01.XML"), format!("{stem}M01.xml")] {
+        let Ok(text) = std::fs::read_to_string(p.with_file_name(name)) else { continue };
+        let attr = |a: &str| -> Option<String> {
+            let i = text.find(&format!("{a}=\""))? + a.len() + 2;
+            let j = text[i..].find('"')? + i;
+            Some(text[i..j].to_string())
+        };
+        if let Some(model) = attr("modelName").filter(|m| !m.is_empty()) {
+            return Some((attr("manufacturer"), model));
+        }
+    }
+    None
+}
+
+fn video_tags(p: &Path) -> Option<(Option<String>, String)> {
+    let tags = mp4_tags(p);
+    let find = |test: &dyn Fn(&str) -> bool| tags.iter().find(|(k, _)| test(&k.to_lowercase())).map(|(_, v)| v.trim().to_string()).filter(|v| !v.is_empty());
+    let model = find(&|k| (k.contains("model") && !k.contains("modelname")) || k == "©mod");
+    let make = find(&|k| k.contains("make") || k.contains("manufacturer") || k == "©mak");
+    match (make, model) {
+        (mk, Some(m)) => Some((mk, m)),
+        (Some(mk), None) => Some((None, mk)),
+        _ => None,
+    }
+}
+
+fn device_from_name(p: &Path) -> Option<String> {
+    let n = p.file_name()?.to_string_lossy().to_uppercase();
+    if n.starts_with("DJI_") {
+        return Some("DJI".into());
+    }
+    if n.starts_with("GX0") || n.starts_with("GH0") || n.starts_with("GOPR") || n.starts_with("GL0") {
+        return Some("GoPro".into());
+    }
+    if n.starts_with("PXL_") {
+        return Some("Pixel".into());
+    }
+    if n.starts_with("INSTA360") || n.ends_with(".INSV") || n.ends_with(".INSP") {
+        return Some("Insta360".into());
+    }
+    None
+}
+
+pub fn pretty_device(make: Option<&str>, model: &str) -> String {
+    let mut m = model.trim().to_string();
+    let lower = make.unwrap_or("").trim().to_lowercase();
+    let mut mk = make.unwrap_or("").trim().to_string();
+    for (p, n) in [("sony", "Sony"), ("canon", "Canon"), ("nikon", "Nikon"), ("fujifilm", "Fujifilm"), ("panasonic", "Panasonic"), ("olympus", "OM System"), ("om digital", "OM System")] {
+        if lower.starts_with(p) {
+            mk = n.into();
+        }
+    }
+    if lower == "apple" || lower == "google" || lower.starts_with("samsung") || lower.is_empty() {
+        mk.clear();
+    }
+    if let Some(first) = mk.split(' ').next() {
+        if !first.is_empty() && m.to_lowercase().starts_with(&first.to_lowercase()) {
+            mk.clear();
+        }
+    }
+    if m.to_lowercase().starts_with("sm-") {
+        m = format!("Samsung {m}");
+    }
+    if mk.is_empty() { m } else { format!("{mk} {m}") }
+}
+
+/// Minimal reader for MP4 / MOV metadata (moov › udta / meta › keys + ilst, and ©xxx atoms).
+pub fn mp4_tags(p: &Path) -> Vec<(String, String)> {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(p) else { return vec![] };
+    let size = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let mut off = 0u64;
+    while off + 8 <= size {
+        let mut h = [0u8; 16];
+        if f.seek(SeekFrom::Start(off)).is_err() || f.read(&mut h).unwrap_or(0) < 8 {
+            break;
+        }
+        let mut bsize = u32::from_be_bytes([h[0], h[1], h[2], h[3]]) as u64;
+        let mut hl = 8u64;
+        if bsize == 1 {
+            bsize = u64::from_be_bytes([h[8], h[9], h[10], h[11], h[12], h[13], h[14], h[15]]);
+            hl = 16;
+        } else if bsize == 0 {
+            bsize = size - off;
+        }
+        if bsize < hl {
+            break;
+        }
+        if &h[4..8] == b"moov" {
+            let len = (bsize - hl).min(64 << 20) as usize;
+            let mut data = vec![0u8; len];
+            if f.seek(SeekFrom::Start(off + hl)).is_err() || f.read_exact(&mut data).is_err() {
+                return vec![];
+            }
+            let mut keys = vec![];
+            let mut out = vec![];
+            walk_boxes(&data, 0, data.len(), &mut keys, &mut out);
+            return out;
+        }
+        off += bsize;
+    }
+    vec![]
+}
+
+fn be32(b: &[u8], i: usize) -> u32 {
+    if i + 4 > b.len() { 0 } else { u32::from_be_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]) }
+}
+
+fn latin(b: &[u8]) -> String {
+    let v: Vec<u8> = b.iter().copied().filter(|c| *c != 0).collect();
+    String::from_utf8(v.clone()).unwrap_or_else(|_| v.iter().map(|c| *c as char).collect())
+}
+
+fn data_value(b: &[u8], start: usize, end: usize) -> Option<String> {
+    let mut j = start;
+    while j + 16 <= end {
+        let s = be32(b, j) as usize;
+        if s < 8 || j + s > end {
+            return None;
+        }
+        if &b[j + 4..j + 8] == b"data" {
+            return Some(latin(&b[j + 16..j + s]));
+        }
+        j += s;
+    }
+    None
+}
+
+fn walk_boxes(b: &[u8], start: usize, end: usize, keys: &mut Vec<String>, out: &mut Vec<(String, String)>) {
+    let mut i = start;
+    while i + 8 <= end {
+        let size = be32(b, i) as usize;
+        if size < 8 || i + size > end {
+            break;
+        }
+        let typ = &b[i + 4..i + 8];
+        let (body, stop) = (i + 8, i + size);
+        match typ {
+            b"meta" => {
+                let skip = if be32(b, body) == 0 { 4 } else { 0 };
+                walk_boxes(b, body + skip, stop, keys, out);
+            }
+            b"keys" => {
+                let count = be32(b, body + 4) as usize;
+                let mut j = body + 8;
+                for _ in 0..count {
+                    let ks = be32(b, j) as usize;
+                    if ks < 8 || j + ks > stop {
+                        break;
+                    }
+                    keys.push(latin(&b[j + 8..j + ks]));
+                    j += ks;
+                }
+            }
+            b"ilst" => {
+                let mut j = body;
+                while j + 8 <= stop {
+                    let isz = be32(b, j) as usize;
+                    if isz < 8 || j + isz > stop {
+                        break;
+                    }
+                    let idx = be32(b, j + 4) as usize;
+                    let name = if idx > 0 && idx <= keys.len() { keys[idx - 1].clone() } else { latin(&b[j + 4..j + 8]) };
+                    if let Some(v) = data_value(b, j + 8, j + isz) {
+                        out.push((name, v));
+                    }
+                    j += isz;
+                }
+            }
+            b"moov" | b"udta" | b"trak" => walk_boxes(b, body, stop, keys, out),
+            _ if typ[0] == 0xA9 => {
+                let name = format!("©{}", latin(&typ[1..]));
+                if let Some(v) = data_value(b, body, stop) {
+                    out.push((name, v));
+                } else if body + 4 <= stop {
+                    let len = ((b[body] as usize) << 8) | b[body + 1] as usize;
+                    out.push((name, latin(&b[body + 4..(body + 4 + len).min(stop)])));
+                }
+            }
+            _ => {}
+        }
+        i = stop;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Settings;
+
+    /// Run with BCKUP_TEST_ASSETS pointing at a folder of sample files (skipped otherwise).
+    #[test]
+    fn assets_go_to_material_by_type_and_device() {
+        let Ok(dir) = std::env::var("BCKUP_TEST_ASSETS") else { return };
+        let root = Path::new(&dir);
+        let layout = Settings::default().asset_layout();
+        let mut out = vec![];
+        for e in walkdir::WalkDir::new(root).into_iter().flatten().filter(|e| e.file_type().is_file()) {
+            let rel = crate::util::rel_path(e.path(), root);
+            out.push(layout.rel(e.path(), &rel));
+        }
+        out.sort();
+        for o in &out {
+            println!("{o}");
+        }
+        let has = |s: &str| out.iter().any(|o| o == s);
+        assert!(has("MATERIAL/Video/iPhone 15 Pro/IMG_4821.MOV"));
+        assert!(has("MATERIAL/Video/Samsung SM-S918B/Client footage/VID_20261120_101500.mp4"));
+        assert!(has("MATERIAL/Video/Sony ILCE-7M4/sony/C0007.MP4"));
+        assert!(has("MATERIAL/Video/Sony ILCE-7M4/sony/C0007M01.XML"));
+        assert!(has("MATERIAL/Video/DJI/DJI_0042.MP4"));
+        assert!(has("MATERIAL/Photo/Fujifilm X-T5/DSCF1234.JPG"));
+        assert!(has("MATERIAL/Graphics/logo-client.png"));
+        assert!(has("MATERIAL/Documents/Brief.pdf"));
+        assert!(has("MATERIAL/Fonts/Brand.otf"));
+        assert!(has("MATERIAL/Archives/pack.zip"));
+        assert!(has("MATERIAL/Audio/music.wav"));
+        assert!(has("MATERIAL/Project Files/notes.prproj"));
+    }
 }

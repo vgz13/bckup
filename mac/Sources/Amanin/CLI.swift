@@ -14,6 +14,7 @@ enum CLI {
         var skip = true
         var mode = CheckMode.thorough
         var separate = true
+        var assets = false
         var catalogPath: String?
         var cloudRemote: String?
         var cloudPath = "Footage"
@@ -30,6 +31,7 @@ enum CLI {
             case "--fast": mode = .fast
             case "--no-skip": skip = false
             case "--flat": separate = false
+            case "--assets": assets = true
             case "--catalog": catalogPath = next()
             case "--cloud": cloudRemote = next()
             case "--cloud-path": cloudPath = next() ?? cloudPath
@@ -71,7 +73,8 @@ enum CLI {
                 kindFolders: AppSettings().kindFolders,
                 skipExisting: skip,
                 checkMode: mode,
-                cloud: cloud
+                cloud: cloud,
+                assets: assets ? AppSettings().assetLayout : nil
             )
             let engine = OffloadEngine(catalog: catalog, cancel: CancelFlag())
             let plan = try engine.plan(spec: spec, scan: scan) { _ in }

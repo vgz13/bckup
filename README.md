@@ -19,6 +19,9 @@ Both apps share the same rules and folder layout, so a drive filled by one is un
 
 ```
 Main folder / Project + date / Video · Photo · Audio / Roll / original card structure
+                             / MATERIAL / Video / iPhone 15 Pro / IMG_4821.MOV
+                                        / Graphics / logo.png
+                                        / Documents / brief.pdf
                              / _BCKUP Reports / <roll> <date>.txt + .csv
 ```
 
@@ -52,7 +55,9 @@ Shown with demo cards and drives on macOS. The Windows app has the same screens,
 - Copy to several drives at once, verified with xxHash64; nothing half-copied ever has its real name
 - Skip what's already there by content hash (or a quick name/size/date check); existing files are never overwritten
 - Projects view with backup status per drive and one-click backup
-- Sort downloads into a project's Assets folder
+- Assets go to `Project / MATERIAL /` sorted by type (Video, Photo, Audio, Graphics, Documents, Fonts, Project Files, Archives, Other), with a folder per camera or phone for video and photos (iPhone, Android, Sony, Canon, DJI, GoPro… read from the files' own metadata)
+- Sort downloads into a project's MATERIAL folder
+- Every folder name can be renamed (Rename folders… on the card screen, or Settings → Folder layout)
 - Card thumbnails, drag and drop, filterable file lists
 - Sharing: WhatsApp, Email, Google Drive link (plus AirDrop on macOS)
 - Google Drive upload with MD5 check through rclone, signed in with each person's own Google account

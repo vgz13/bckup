@@ -212,8 +212,17 @@ enum CameraDetector {
         return "Unknown"
     }
 
-    /// Reads Make/Model from the EXIF of the first readable photo on the card.
+    /// The card's camera: EXIF of the first photo, else the metadata of the first clip.
     static func model(_ files: [CardFile]) -> String? {
+        if let m = photoModel(files) { return m }
+        for f in files.filter({ $0.kind == .video }).prefix(3) {
+            if let d = DeviceDetector.device(for: f.url) { return d }
+        }
+        return nil
+    }
+
+    /// Reads Make/Model from the EXIF of the first readable photo on the card.
+    static func photoModel(_ files: [CardFile]) -> String? {
         let exts: Set<String> = ["jpg", "jpeg", "arw", "cr3", "cr2", "nef", "raf", "rw2", "orf", "dng", "heic", "hif", "pef", "srw", "gpr", "insp"]
         let photos = files.filter { exts.contains($0.url.pathExtension.lowercased()) }.prefix(4)
         for f in photos {
@@ -273,5 +282,212 @@ enum Router {
         var c: [FileKind: Int] = [:]
         for f in files where f.kind.isMedia { c[f.kind, default: 0] += 1 }
         return c.max { $0.value < $1.value }?.key
+    }
+}
+
+
+// MARK: - Device detection (which camera or phone made a file)
+
+enum DeviceDetector {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var cache: [String: String] = [:]
+    nonisolated(unsafe) private static var misses = Set<String>()
+
+    /// A readable device name such as "iPhone 15 Pro", "Sony ILCE-7M4", "Pixel 8" or "DJI", or nil if unknown.
+    static func device(for url: URL) -> String? {
+        let key = url.path
+        lock.lock()
+        if let d = cache[key] { lock.unlock(); return d }
+        if misses.contains(key) { lock.unlock(); return nil }
+        lock.unlock()
+        let d = detect(url)
+        lock.lock()
+        if let d { cache[key] = d } else { misses.insert(key) }
+        lock.unlock()
+        return d
+    }
+
+    private static func detect(_ url: URL) -> String? {
+        let ext = url.pathExtension.lowercased()
+        let kind = MediaTypes.kind(ofExtension: ext)
+        if kind == .photo, let (make, model) = exif(url) { return pretty(make: make, model: model) }
+        if kind == .video {
+            if let (make, model) = sonyXML(url) { return pretty(make: make, model: model) }
+            if let (make, model) = videoMetadata(url) { return pretty(make: make, model: model) }
+        }
+        return fromName(url)
+    }
+
+    static func exif(_ url: URL) -> (String?, String)? {
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+              let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
+              let tiff = props[kCGImagePropertyTIFFDictionary] as? [CFString: Any],
+              let model = (tiff[kCGImagePropertyTIFFModel] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !model.isEmpty
+        else { return nil }
+        return ((tiff[kCGImagePropertyTIFFMake] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), model)
+    }
+
+    /// Sony writes <Device manufacturer="Sony" modelName="ILCE-7M4"/> into C0001M01.XML next to each clip.
+    static func sonyXML(_ url: URL) -> (String?, String)? {
+        let stem = url.deletingPathExtension().lastPathComponent
+        for name in ["\(stem)M01.XML", "\(stem)M01.xml"] {
+            let x = url.deletingLastPathComponent().appendingPathComponent(name)
+            guard let text = try? String(contentsOf: x, encoding: .utf8) else { continue }
+            func attr(_ a: String) -> String? {
+                guard let r = text.range(of: a + "=\""), let e = text[r.upperBound...].firstIndex(of: "\"") else { return nil }
+                return String(text[r.upperBound..<e])
+            }
+            if let model = attr("modelName"), !model.isEmpty { return (attr("manufacturer"), model) }
+        }
+        return nil
+    }
+
+    /// QuickTime / MP4 metadata: Apple (com.apple.quicktime.make/model), Android (com.android.manufacturer/model)
+    /// and the classic ©mak / ©mod atoms many cameras write.
+    static func videoMetadata(_ url: URL) -> (String?, String)? {
+        let tags = MP4Tags.read(url)
+        func find(_ test: (String) -> Bool) -> String? {
+            tags.first { test($0.key.lowercased()) }.map { $0.value.trimmingCharacters(in: .whitespacesAndNewlines) }.flatMap { $0.isEmpty ? nil : $0 }
+        }
+        let model = find { ($0.contains("model") && !$0.contains("modelname")) || $0 == "©mod" }
+        let make = find { $0.contains("make") || $0.contains("manufacturer") || $0 == "©mak" }
+        if let model { return (make, model) }
+        if let make { return (nil, make) }
+        return nil
+    }
+
+    /// Last resort: names cameras and phones give their files.
+    static func fromName(_ url: URL) -> String? {
+        let n = url.lastPathComponent.uppercased()
+        if n.hasPrefix("DJI_") { return "DJI" }
+        if n.hasPrefix("GX0") || n.hasPrefix("GH0") || n.hasPrefix("GOPR") || n.hasPrefix("GL0") { return "GoPro" }
+        if n.hasPrefix("PXL_") { return "Pixel" }
+        if n.hasPrefix("INSTA360") || n.hasSuffix(".INSV") || n.hasSuffix(".INSP") { return "Insta360" }
+        return nil
+    }
+
+    static func pretty(make: String?, model: String) -> String {
+        var m = model
+        var mk = (make ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = mk.lowercased()
+        if lower.hasPrefix("sony") { mk = "Sony" }
+        else if lower.hasPrefix("canon") { mk = "Canon" }
+        else if lower.hasPrefix("nikon") { mk = "Nikon" }
+        else if lower.hasPrefix("fujifilm") { mk = "Fujifilm" }
+        else if lower.hasPrefix("panasonic") { mk = "Panasonic" }
+        else if lower.hasPrefix("olympus") || lower.hasPrefix("om digital") { mk = "OM System" }
+        else if lower == "apple" || lower == "google" || lower.hasPrefix("samsung") || lower.isEmpty { mk = "" }
+        if !mk.isEmpty, let first = mk.split(separator: " ").first, m.lowercased().hasPrefix(first.lowercased()) { mk = "" }
+        if m.lowercased().hasPrefix("sm-") { m = "Samsung " + m }
+        return mk.isEmpty ? m : "\(mk) \(m)"
+    }
+}
+
+
+/// Minimal reader for the metadata in MP4 / MOV files (moov › udta / meta › keys + ilst, and ©xxx atoms).
+enum MP4Tags {
+    static func read(_ url: URL) -> [String: String] {
+        guard let fh = try? FileHandle(forReadingFrom: url) else { return [:] }
+        defer { try? fh.close() }
+        let fileSize = (try? fh.seekToEnd()) ?? 0
+        var off: UInt64 = 0
+        while off + 8 <= fileSize {
+            try? fh.seek(toOffset: off)
+            guard let hdr = try? fh.read(upToCount: 16), hdr.count >= 8 else { break }
+            let h = [UInt8](hdr)
+            var size = UInt64(be32(h, 0))
+            let type = fourCC(h, 4)
+            var headerLen: UInt64 = 8
+            if size == 1, h.count >= 16 { size = be64(h, 8); headerLen = 16 } else if size == 0 { size = fileSize - off }
+            if size < headerLen { break }
+            if type == "moov" {
+                try? fh.seek(toOffset: off + headerLen)
+                let len = Int(min(size - headerLen, 64 << 20))
+                guard let data = try? fh.read(upToCount: len) else { return [:] }
+                var keys: [String] = []
+                var out: [String: String] = [:]
+                walk([UInt8](data), 0, data.count, &keys, &out)
+                return out
+            }
+            off += size
+        }
+        return [:]
+    }
+
+    private static func be32(_ b: [UInt8], _ i: Int) -> UInt32 {
+        guard i + 4 <= b.count else { return 0 }
+        return UInt32(b[i]) << 24 | UInt32(b[i + 1]) << 16 | UInt32(b[i + 2]) << 8 | UInt32(b[i + 3])
+    }
+    private static func be64(_ b: [UInt8], _ i: Int) -> UInt64 { UInt64(be32(b, i)) << 32 | UInt64(be32(b, i + 4)) }
+    private static func fourCC(_ b: [UInt8], _ i: Int) -> String {
+        guard i + 4 <= b.count else { return "" }
+        return String(bytes: b[i..<i + 4], encoding: .isoLatin1) ?? ""
+    }
+    private static func text(_ b: [UInt8], _ from: Int, _ to: Int) -> String {
+        guard from < to, to <= b.count else { return "" }
+        let bytes = Array(b[from..<to]).filter { $0 != 0 }
+        return String(bytes: bytes, encoding: .utf8) ?? String(bytes: bytes, encoding: .isoLatin1) ?? ""
+    }
+
+    private static let containers: Set<String> = ["moov", "udta", "meta", "ilst", "trak"]
+
+    private static func walk(_ b: [UInt8], _ start: Int, _ end: Int, _ keys: inout [String], _ out: inout [String: String]) {
+        var i = start
+        while i + 8 <= end {
+            let size = Int(be32(b, i))
+            let type = fourCC(b, i + 4)
+            guard size >= 8, i + size <= end else { break }
+            let body = i + 8
+            let stop = i + size
+            switch type {
+            case "meta":
+                // ISO 'meta' has 4 bytes of version/flags before its children; QuickTime's doesn't.
+                let skip = be32(b, body) == 0 ? 4 : 0
+                walk(b, body + skip, stop, &keys, &out)
+            case "keys":
+                var j = body + 8
+                let count = Int(be32(b, body + 4))
+                for _ in 0..<count where j + 8 <= stop {
+                    let ks = Int(be32(b, j))
+                    guard ks >= 8 else { break }
+                    keys.append(text(b, j + 8, min(j + ks, stop)))
+                    j += ks
+                }
+            case "ilst":
+                var j = body
+                while j + 8 <= stop {
+                    let isz = Int(be32(b, j))
+                    guard isz >= 8, j + isz <= stop else { break }
+                    let idx = Int(be32(b, j + 4))
+                    let name = (idx > 0 && idx <= keys.count) ? keys[idx - 1] : fourCC(b, j + 4)
+                    if let v = dataValue(b, j + 8, j + isz) { out[name] = v }
+                    j += isz
+                }
+            default:
+                if containers.contains(type) {
+                    walk(b, body, stop, &keys, &out)
+                } else if b[i + 4] == 0xA9 {
+                    // QuickTime text atom: either a 'data' child, or [length 2][language 2][text].
+                    let name = "©" + (String(bytes: b[(i + 5)..<(i + 8)], encoding: .isoLatin1) ?? "")
+                    if let v = dataValue(b, body, stop) { out[name] = v }
+                    else if body + 4 <= stop {
+                        let len = Int(b[body]) << 8 | Int(b[body + 1])
+                        out[name] = text(b, body + 4, min(body + 4 + len, stop))
+                    }
+                }
+            }
+            i = stop
+        }
+    }
+
+    private static func dataValue(_ b: [UInt8], _ start: Int, _ end: Int) -> String? {
+        var j = start
+        while j + 16 <= end {
+            let s = Int(be32(b, j))
+            guard s >= 8, j + s <= end else { return nil }
+            if fourCC(b, j + 4) == "data" { return text(b, j + 16, j + s) }
+            j += s
+        }
+        return nil
     }
 }

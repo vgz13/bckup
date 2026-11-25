@@ -80,6 +80,10 @@ struct AppSettings: Codable, Equatable {
     var videoFolder = "Video"
     var photoFolder = "Photo"
     var audioFolder = "Audio"
+    var materialFolder = "MATERIAL"
+    var splitMaterial = true
+    var groupByDevice = true
+    var materialNames: [String: String] = [:]
     var skipExisting = true
     var checkMode: CheckMode = .thorough
     var cloudEnabled = false
@@ -108,6 +112,10 @@ struct AppSettings: Codable, Equatable {
         videoFolder = try c.decodeIfPresent(String.self, forKey: .videoFolder) ?? d.videoFolder
         photoFolder = try c.decodeIfPresent(String.self, forKey: .photoFolder) ?? d.photoFolder
         audioFolder = try c.decodeIfPresent(String.self, forKey: .audioFolder) ?? d.audioFolder
+        materialFolder = try c.decodeIfPresent(String.self, forKey: .materialFolder) ?? d.materialFolder
+        splitMaterial = try c.decodeIfPresent(Bool.self, forKey: .splitMaterial) ?? d.splitMaterial
+        groupByDevice = try c.decodeIfPresent(Bool.self, forKey: .groupByDevice) ?? d.groupByDevice
+        materialNames = try c.decodeIfPresent([String: String].self, forKey: .materialNames) ?? d.materialNames
         skipExisting = try c.decodeIfPresent(Bool.self, forKey: .skipExisting) ?? d.skipExisting
         checkMode = try c.decodeIfPresent(CheckMode.self, forKey: .checkMode) ?? d.checkMode
         cloudEnabled = try c.decodeIfPresent(Bool.self, forKey: .cloudEnabled) ?? d.cloudEnabled
@@ -169,6 +177,17 @@ struct AppSettings: Codable, Equatable {
         return useClientFolder && !lastClient.isEmpty ? lastClient + "/" + lastProject : lastProject
     }
 
+    func materialName(_ c: AssetCategory) -> String {
+        let n = cleanName(materialNames[c.rawValue] ?? "")
+        return n.isEmpty ? c.defaultName : n
+    }
+
+    var assetLayout: AssetLayout {
+        let f = cleanName(materialFolder)
+        return AssetLayout(folder: f.isEmpty ? "MATERIAL" : f, split: splitMaterial, byDevice: groupByDevice,
+                           names: Dictionary(uniqueKeysWithValues: AssetCategory.allCases.map { ($0, materialName($0)) }))
+    }
+
     var kindFolders: [FileKind: String] {
         [.video: videoFolder, .photo: photoFolder, .audio: audioFolder]
     }
@@ -182,6 +201,100 @@ struct AppSettings: Codable, Equatable {
         case .before: return "\(d) \(name)"
         case .none: return name
         }
+    }
+}
+
+// MARK: - Assets (MATERIAL folder)
+
+enum AssetCategory: String, CaseIterable, Codable, Identifiable {
+    case video, photo, audio, graphics, documents, fonts, projectFiles, archives, other
+    var id: String { rawValue }
+
+    var defaultName: String {
+        switch self {
+        case .video: return "Video"
+        case .photo: return "Photo"
+        case .audio: return "Audio"
+        case .graphics: return "Graphics"
+        case .documents: return "Documents"
+        case .fonts: return "Fonts"
+        case .projectFiles: return "Project Files"
+        case .archives: return "Archives"
+        case .other: return "Other"
+        }
+    }
+
+    var examples: String {
+        switch self {
+        case .video: return "mp4, mov, mxf"
+        case .photo: return "jpg, heic, raw"
+        case .audio: return "wav, mp3, aac"
+        case .graphics: return "png, svg, ai, eps, psd"
+        case .documents: return "pdf, docx, pptx, xlsx, txt"
+        case .fonts: return "ttf, otf"
+        case .projectFiles: return "prproj, aep, drp, cube"
+        case .archives: return "zip, rar, 7z"
+        case .other: return "everything else"
+        }
+    }
+
+    static let graphicsExt: Set<String> = ["png", "svg", "ai", "eps", "psd", "psb", "gif", "webp", "ico", "cdr", "sketch", "fig", "xd", "indd", "afdesign", "afphoto", "tga", "exr", "bmp"]
+    static let documentExt: Set<String> = ["pdf", "doc", "docx", "ppt", "pptx", "key", "xls", "xlsx", "csv", "txt", "rtf", "pages", "numbers", "md", "odt", "ods", "odp", "srt", "vtt"]
+    static let fontExt: Set<String> = ["ttf", "otf", "woff", "woff2", "ttc"]
+    static let projectExt: Set<String> = ["prproj", "aep", "aepx", "drp", "drt", "fcpxml", "fcpbundle", "edl", "aaf", "mogrt", "cube", "3dl", "lut", "veg", "xml", "blend", "c4d"]
+    static let archiveExt: Set<String> = ["zip", "rar", "7z", "tar", "gz", "tgz", "bz2", "dmg", "iso"]
+
+    static func of(_ url: URL) -> AssetCategory {
+        let e = url.pathExtension.lowercased()
+        if graphicsExt.contains(e) { return .graphics }
+        if documentExt.contains(e) { return .documents }
+        if fontExt.contains(e) { return .fonts }
+        if projectExt.contains(e) { return .projectFiles }
+        if archiveExt.contains(e) { return .archives }
+        switch MediaTypes.kind(ofExtension: e) {
+        case .video: return .video
+        case .photo: return .photo
+        case .audio: return .audio
+        default: return .other
+        }
+    }
+}
+
+struct AssetLayout {
+    let folder: String
+    let split: Bool
+    let byDevice: Bool
+    let names: [AssetCategory: String]
+
+    /// MATERIAL / Video / iPhone 15 Pro / <file's own relative path>
+    func rel(for url: URL, rel: String) -> String {
+        var parts = [folder]
+        if split {
+            // Sidecars (C0001M01.XML, .THM, .SRT…) stay with the clip they belong to.
+            let anchor = AssetLayout.partner(of: url) ?? url
+            let c = AssetCategory.of(anchor)
+            parts.append(names[c] ?? c.defaultName)
+            if byDevice && (c == .video || c == .photo), let d = DeviceDetector.device(for: anchor) {
+                parts.append(cleanName(d))
+            }
+        }
+        parts.append(rel)
+        return parts.filter { !$0.isEmpty }.joined(separator: "/")
+    }
+
+    /// For a sidecar file, the video or photo next to it whose name it starts with.
+    static func partner(of url: URL) -> URL? {
+        guard MediaTypes.kind(ofExtension: url.pathExtension) == .sidecar else { return nil }
+        let stem = url.deletingPathExtension().lastPathComponent.uppercased()
+        let dir = url.deletingLastPathComponent()
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+        let match = names.first { n in
+            let u = URL(fileURLWithPath: n)
+            let k = MediaTypes.kind(ofExtension: u.pathExtension)
+            let s = u.deletingPathExtension().lastPathComponent.uppercased()
+            return (k == .video || k == .photo) && !s.isEmpty && stem.hasPrefix(s)
+        }
+        return match.map { dir.appendingPathComponent($0) }
     }
 }
 
@@ -237,6 +350,8 @@ struct OffloadSpec {
     var cloud: CloudSpec?
     /// When set, files keep their own relative path under this folder (used for project-to-backup copies).
     var mirrorPrefix: String? = nil
+    /// When set, files are assets: Project / MATERIAL / category / device / file.
+    var assets: AssetLayout? = nil
 
     var projectRel: String {
         [clientFolder ?? "", projectFolder].filter { !$0.isEmpty }.joined(separator: "/")
@@ -244,6 +359,7 @@ struct OffloadSpec {
 
     func targetRel(for file: CardFile, routed: FileKind) -> String {
         if let m = mirrorPrefix { return m.isEmpty ? file.rel : m + "/" + file.rel }
+        if let a = assets { return ([projectRel] + [a.rel(for: file.url, rel: file.rel)]).filter { !$0.isEmpty }.joined(separator: "/") }
         var parts = [projectRel]
         if separateByType, let k = kindFolders[routed], !k.isEmpty { parts.append(k) }
         if !roll.isEmpty { parts.append(roll) }

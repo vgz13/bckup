@@ -74,6 +74,7 @@ struct DestinationsSettings: View {
 
 struct FolderSettings: View {
     @EnvironmentObject var app: AppState
+    @State private var showRename = false
 
     private let formats = ["dd.MM.yy", "dd.MM.yyyy", "yyyy-MM-dd", "yyMMdd", "dd-MM-yyyy"]
 
@@ -97,6 +98,18 @@ struct FolderSettings: View {
                 TextField("Photo folder", text: $app.settings.photoFolder)
                 TextField("Audio folder", text: $app.settings.audioFolder)
             }
+            Section {
+                TextField("Assets folder", text: $app.settings.materialFolder)
+                Toggle("Split into a folder per type", isOn: $app.settings.splitMaterial)
+                Toggle("Folder per camera or phone (Video and Photo)", isOn: $app.settings.groupByDevice)
+                    .disabled(!app.settings.splitMaterial)
+                Button("Rename type folders…") { showRename = true }
+                    .disabled(!app.settings.splitMaterial)
+            } header: {
+                Text("Assets")
+            } footer: {
+                Text("Logos, music, briefs and client footage (Sort downloads, or loose files dragged in) go to Project / \(app.settings.assetLayout.folder) / Video, Photo, Audio, Graphics, Documents, Fonts, Project Files, Archives or Other.")
+            }
             Section("Contoh") {
                 Text(example)
                     .font(.system(.callout, design: .monospaced))
@@ -104,6 +117,7 @@ struct FolderSettings: View {
             }
         }
         .formStyle(.grouped)
+        .sheet(isPresented: $showRename) { RenameFoldersSheet().environmentObject(app) }
     }
 
     private var example: String {

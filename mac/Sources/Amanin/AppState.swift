@@ -304,6 +304,8 @@ final class OffloadJob: ObservableObject {
     @Published var skipExisting: Bool { didSet { fieldChanged() } }
     @Published var checkMode: CheckMode { didSet { fieldChanged() } }
     @Published var separateByType: Bool { didSet { fieldChanged() } }
+    /// Assets (logos, music, briefs, client footage) go to Project / MATERIAL / category / device.
+    @Published var asAssets = false { didSet { fieldChanged() } }
 
     private var cancelFlag = CancelFlag()
     private var lastSample: (t: CFAbsoluteTime, done: Int64)?
@@ -386,7 +388,7 @@ final class OffloadJob: ObservableObject {
         if !FileManager.default.fileExists(atPath: p) { return "The main folder isn't connected. Plug in its drive first." }
         if settings.useClientFolder && cleanName(client).isEmpty { return "Enter a client name" }
         if cleanName(project).isEmpty { return "Enter a project name" }
-        if cleanName(roll).isEmpty { return "Enter a roll name" }
+        if !asAssets && cleanName(roll).isEmpty { return "Enter a roll name" }
         if useCloud && settings.cloudEnabled, let issue = settings.cloudIssue {
             return issue
         }
@@ -405,7 +407,8 @@ final class OffloadJob: ObservableObject {
             kindFolders: settings.kindFolders,
             skipExisting: skipExisting,
             checkMode: checkMode,
-            cloud: cloud
+            cloud: cloud,
+            assets: asAssets ? settings.assetLayout : nil
         )
     }
 
@@ -427,12 +430,25 @@ final class OffloadJob: ObservableObject {
         var levels: [String] = []
         if let c = spec.clientFolder { levels.append(c.isEmpty ? "Client" : c) }
         levels.append(spec.projectFolder.isEmpty ? "Project" : spec.projectFolder)
+        if let a = spec.assets {
+            levels.append(a.folder)
+            if a.split {
+                let cats = Set((scan?.files ?? []).map { AssetCategory.of($0.url) })
+                let names = AssetCategory.allCases.filter { cats.contains($0) }.map { a.names[$0] ?? $0.defaultName }
+                if !names.isEmpty { levels.append(names.count > 4 ? names.prefix(4).joined(separator: " · ") + " …" : names.joined(separator: " · ")) }
+            }
+            return crumbs(root: root, levels: levels)
+        }
         if spec.separateByType {
             let kinds = Set((scan?.files ?? []).map { Router.route([$0])[$0.rel] ?? .video })
             let names = [FileKind.video, .photo, .audio].filter { kinds.contains($0) }.compactMap { spec.kindFolders[$0] }
             if !names.isEmpty { levels.append(names.joined(separator: " · ")) }
         }
         levels.append(spec.roll.isEmpty ? "Roll" : spec.roll)
+        return crumbs(root: root, levels: levels)
+    }
+
+    private func crumbs(root: String, levels: [String]) -> [Crumb] {
         var out = [Crumb(text: (root as NSString).lastPathComponent, isNew: false)]
         var path = root
         var missing = false
@@ -598,6 +614,7 @@ final class OffloadJob: ObservableObject {
     private func applyScan(_ s: CardScan) {
         scan = s
         date = s.suggestedDate
+        if items != nil { asAssets = true }
         if roll.isEmpty {
             if let items {
                 roll = items.count == 1 ? cleanName(items[0].deletingPathExtension().lastPathComponent) : "Extras"

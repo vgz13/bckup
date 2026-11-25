@@ -5,7 +5,7 @@ let route = { view: "home", source: null };
 let settingsTab = "dest";
 let projectsCache = null;
 let projectsOnlyMissing = false;
-let dl = { source: "downloads", days: 14, items: [], sel: new Set(), project: "", sub: "Assets", move: false, msg: "" };
+let dl = { source: "downloads", days: 14, items: [], sel: new Set(), project: "", sub: "", move: false, msg: "" };
 let fileFilter = "all";
 let fileSel = new Set();
 let filesOpen = false;
@@ -238,12 +238,13 @@ function formPanel(j) {
         ${s.useClientFolder ? `<label>Client</label><input type="text" id="f-client" list="dl-clients" value="${esc(f.client)}" placeholder="Client name" ${disabled}><span></span><span></span>` : ""}
         <label>Project</label><input type="text" id="f-project" list="dl-projects" value="${esc(f.project)}" placeholder="Project / shoot name" ${disabled} style="grid-column: span 3">
         <label>Date</label><input type="date" id="f-date" value="${iso}" ${J.projectExists || s.datePosition === "none" ? "disabled" : disabled}>
-        <label>Roll</label><input type="text" id="f-roll" value="${esc(f.roll)}" placeholder="Roll / card name" ${disabled}>
+        ${f.asAssets ? `<span></span><span></span>` : `<label>Roll</label><input type="text" id="f-roll" value="${esc(f.roll)}" placeholder="Roll / card name" ${disabled}>`}
       </div>
       <datalist id="dl-clients">${J.clients.map((c) => `<option value="${esc(c)}">`).join("")}</datalist>
       <datalist id="dl-projects">${J.projects.map((c) => `<option value="${esc(c)}">`).join("")}</datalist>
       <div class="crumb" title="${esc(J.previewPath)}"><div class="p">${crumbs}</div>
         <div class="small muted">${J.projectExists ? "This project already exists; new files go into the same folder." : anyNew ? "Highlighted folders will be created." : ""}</div></div>
+      <div class="row" style="justify-content:flex-end"><button type="button" class="link small" id="f-rename">Rename folders…</button></div>
     </div></div>
     <div><h2>Save to</h2><div class="panel">${dests}${cloud}
       <div class="row small"><button type="button" class="link" id="f-primary">Change main folder…</button><button type="button" class="link" id="f-backup">Add backup drive…</button>
@@ -253,7 +254,9 @@ function formPanel(j) {
         <div class="seg"><button type="button" data-mode="thorough" class="${f.checkMode === "thorough" ? "on" : ""}" ${!f.skipExisting || disabled ? "disabled" : ""}>Thorough (hash)</button><button type="button" data-mode="fast" class="${f.checkMode === "fast" ? "on" : ""}" ${!f.skipExisting || disabled ? "disabled" : ""}>Quick</button></div></div>
       <div class="small muted">${f.skipExisting ? (f.checkMode === "thorough" ? "Safest. Files on the card are read and compared by content with what's already at the destination, so moved or renamed files are still recognised." : "Faster for big cards, but skipped files aren't compared by content, so a card can't be marked \"Safe to format\".") : "Every file on the card is copied. Files whose names already exist aren't overwritten; they get a _2 suffix."}</div>
       <div class="sep"></div>
-      <label class="check"><input type="checkbox" id="f-split" ${f.separateByType ? "checked" : ""} ${disabled}> Split into Video / Photo / Audio folders</label>
+      <label class="check"><input type="checkbox" id="f-assets" ${f.asAssets ? "checked" : ""} ${disabled}> Save as assets in the ${esc(S.settings.materialFolder || "MATERIAL")} folder</label>
+      <div class="small muted">${f.asAssets ? `For logos, music, briefs and client footage. Files are sorted into ${S.settings.splitMaterial ? "Video, Photo, Audio, Graphics, Documents and more" : "one folder"}${S.settings.splitMaterial && S.settings.groupByDevice ? ", with a folder per camera or phone" : ""}.` : "For camera cards. Turn on for loose files that aren't from a card."}</div>
+      ${f.asAssets ? "" : `<label class="check"><input type="checkbox" id="f-split" ${f.separateByType ? "checked" : ""} ${disabled}> Split into Video / Photo / Audio folders</label>`}
     </div></div></div>`;
 }
 
@@ -268,6 +271,7 @@ function readForm(j) {
   if (d) { const [y, m, dd] = d.split("-").map(Number); f.date = new Date(y, m - 1, dd, 12).getTime() / 1000; }
   f.skipExisting = $("#f-skip") ? $("#f-skip").checked : f.skipExisting;
   f.separateByType = $("#f-split") ? $("#f-split").checked : f.separateByType;
+  f.asAssets = $("#f-assets") ? $("#f-assets").checked : !!f.asAssets;
   if ($("#f-cloud")) f.useCloud = $("#f-cloud").checked;
   f.backupsOff = [...document.querySelectorAll(".dest-toggle")].filter((c) => !c.checked && !c.disabled).map((c) => c.dataset.path);
   return f;
@@ -289,7 +293,8 @@ function pushForm(j, immediate) {
 function bindForm(j) {
   ["f-client", "f-project", "f-roll"].forEach((id) => $("#" + id)?.addEventListener("input", () => pushForm(j, false)));
   ["f-client", "f-project", "f-roll"].forEach((id) => $("#" + id)?.addEventListener("change", () => { document.activeElement.blur(); pushForm(j, true); }));
-  ["f-date", "f-skip", "f-split", "f-cloud"].forEach((id) => $("#" + id)?.addEventListener("change", () => pushForm(j, true)));
+  ["f-date", "f-skip", "f-split", "f-cloud", "f-assets"].forEach((id) => $("#" + id)?.addEventListener("change", () => pushForm(j, true)));
+  $("#f-rename")?.addEventListener("click", renameModal);
   document.querySelectorAll(".dest-toggle").forEach((c) => c.addEventListener("change", () => pushForm(j, true)));
   document.querySelectorAll("[data-mode]").forEach((b) => b.addEventListener("click", () => { j.form.checkMode = b.dataset.mode; invoke("update_form", { source: j.source, form: { ...readForm(j), checkMode: b.dataset.mode } }).then(refresh); }));
   $("#f-primary")?.addEventListener("click", () => call("choose_primary"));
@@ -571,7 +576,7 @@ async function loadDownloads() {
 
 function renderDownloads() {
   const items = dl.items || [];
-  let h = `<div><h1>Sort downloads</h1><div class="meta muted" style="margin-top:3px">Put logos, music, briefs or client footage into a project folder. Files are only copied; originals go to the ${isWin() ? "Recycle Bin" : "Bin"} only if you choose.</div></div>
+  let h = `<div><h1>Sort downloads</h1><div class="meta muted" style="margin-top:3px">Put logos, music, briefs or client footage into a project's ${esc(S.settings.materialFolder || "MATERIAL")} folder, sorted by type and by camera or phone. Files are only copied; originals go to the ${isWin() ? "Recycle Bin" : "Bin"} only if you choose.</div></div>
     <div class="row"><div class="seg"><button type="button" data-src="downloads" class="${dl.source === "downloads" ? "on" : ""}">Downloads</button><button type="button" data-src="desktop" class="${dl.source === "desktop" ? "on" : ""}">Desktop</button></div>
       <select id="d-days" style="width:auto">${[7, 14, 30, 90].map((d) => `<option value="${d}" ${dl.days === d ? "selected" : ""}>${d} days</option>`).join("")}</select>
       <button type="button" class="btn icon" id="d-refresh">${icon("refresh")}</button></div>`;
@@ -606,7 +611,7 @@ function renderDownloads() {
   const opts = dl.options || [];
   setBar(`<div class="grow" style="display:flex;flex-direction:column;gap:7px">
       <div class="row"><span class="muted">To</span><select id="d-project" style="max-width:300px"><option value="">Choose a project…</option>${opts.map((o) => `<option ${o === dl.project ? "selected" : ""}>${esc(o)}</option>`).join("")}</select>
-        <span class="muted">/</span><input type="text" id="d-sub" value="${esc(dl.sub)}" style="width:110px"><span style="flex:1"></span>
+        <span class="muted">/</span><input type="text" id="d-sub" value="${esc(dl.sub)}" placeholder="${esc(S.settings.materialFolder || "MATERIAL")}" title="Folder inside the project. Files are sorted into a folder per type inside it." style="width:120px"><span style="flex:1"></span>
         <button type="button" class="btn primary" id="d-copy" ${!dl.sel.size || !dl.project || dl.busy ? "disabled" : ""}>${dl.busy ? "Copying…" : dl.sel.size ? `Copy ${dl.sel.size}` : "Copy"}</button></div>
       <div class="row"><label class="check"><input type="checkbox" id="d-move" ${dl.move ? "checked" : ""}> Move originals to the ${isWin() ? "Recycle Bin" : "Bin"} after copying</label><span class="small muted">${esc(dl.msg)}</span></div></div>`);
   $("#d-project").onchange = (e) => { dl.project = e.target.value; renderDownloads(); };
@@ -643,7 +648,12 @@ async function renderSettings() {
       <label>File types</label><label class="check"><input type="checkbox" id="s-split" ${s.separateByType ? "checked" : ""}> Split into a folder per type</label>
       <label>Video folder</label><input type="text" id="s-vf" value="${esc(s.videoFolder)}">
       <label>Photo folder</label><input type="text" id="s-pf" value="${esc(s.photoFolder)}">
-      <label>Audio folder</label><input type="text" id="s-af" value="${esc(s.audioFolder)}"></div>`;
+      <label>Audio folder</label><input type="text" id="s-af" value="${esc(s.audioFolder)}">
+      <label style="font-weight:600;color:var(--text)">Assets</label><span class="small muted">Logos, music, briefs and client footage (Sort downloads, or loose files dragged in).</span>
+      <label>Assets folder</label><input type="text" id="s-mf" value="${esc(s.materialFolder)}">
+      <label>Sort by type</label><label class="check"><input type="checkbox" id="s-msplit" ${s.splitMaterial ? "checked" : ""}> Split into a folder per type</label>
+      <label>Cameras and phones</label><label class="check"><input type="checkbox" id="s-mdev" ${s.groupByDevice ? "checked" : ""} ${s.splitMaterial ? "" : "disabled"}> Folder per camera or phone (Video and Photo)</label>
+      <span></span><div><button type="button" class="btn" id="s-rename">Rename folders…</button></div></div>`;
   } else if (settingsTab === "check") {
     body = `<div class="form">
       <label>Default for new cards</label><label class="check"><input type="checkbox" id="s-skip" ${s.skipExisting ? "checked" : ""}> Only copy files that aren't there yet</label>
@@ -688,6 +698,10 @@ async function renderSettings() {
   bindv("s-datefmt", "dateFormat");
   bindc("s-split", "separateByType");
   bindv("s-vf", "videoFolder"); bindv("s-pf", "photoFolder"); bindv("s-af", "audioFolder");
+  bindv("s-mf", "materialFolder");
+  bindc("s-msplit", "splitMaterial");
+  bindc("s-mdev", "groupByDevice");
+  $("#s-rename")?.addEventListener("click", renameModal);
   bindc("s-skip", "skipExisting");
   bindv("s-mode", "checkMode");
   bindc("s-cloud", "cloudEnabled");
@@ -717,6 +731,48 @@ async function testAuto() {
     autoStep = 3;
     if (S.testAuto && !window.__noStart) await invoke("start_job", { source: j.source });
   }
+}
+
+// MARK: rename folders
+
+const ASSET_CATS = [["video", "Video", "mp4, mov, mxf"], ["photo", "Photo", "jpg, heic, raw"], ["audio", "Audio", "wav, mp3, aac"], ["graphics", "Graphics", "png, svg, ai, eps, psd"], ["documents", "Documents", "pdf, docx, pptx, xlsx, txt"], ["fonts", "Fonts", "ttf, otf"], ["projectFiles", "Project Files", "prproj, aep, drp, cube"], ["archives", "Archives", "zip, rar, 7z"], ["other", "Other", "everything else"]];
+
+function renameModal() {
+  const s = S.settings;
+  const host = document.getElementById("modal");
+  const names = s.materialNames || {};
+  host.innerHTML = `<div class="modal-bg"><div class="modal">
+    <h3>Folder names</h3>
+    <div class="form">
+      <label style="font-weight:600;color:var(--text)">Camera cards</label><span></span>
+      <label>Video</label><input type="text" id="rn-video" value="${esc(s.videoFolder)}">
+      <label>Photo</label><input type="text" id="rn-photo" value="${esc(s.photoFolder)}">
+      <label>Audio</label><input type="text" id="rn-audio" value="${esc(s.audioFolder)}">
+      <label style="font-weight:600;color:var(--text)">Assets</label><span></span>
+      <label>Assets folder</label><input type="text" id="rn-material" value="${esc(s.materialFolder)}">
+      <span></span><label class="check"><input type="checkbox" id="rn-split" ${s.splitMaterial ? "checked" : ""}> Split into a folder per type</label>
+      <span></span><label class="check"><input type="checkbox" id="rn-dev" ${s.groupByDevice ? "checked" : ""}> Folder per camera or phone (Video and Photo)</label>
+      ${ASSET_CATS.map(([k, d, ex]) => `<label title="${ex}">${d}</label><input type="text" data-cat="${k}" value="${esc(names[k] || d)}" title="${ex}">`).join("")}
+    </div>
+    <div class="small muted">New names apply to folders made from now on. Folders already on your drives aren't renamed.</div>
+    <div class="row"><button type="button" class="btn" id="rn-reset">Reset to defaults</button><span style="flex:1"></span><button type="button" class="btn" id="rn-cancel">Cancel</button><button type="button" class="btn primary" id="rn-save">Save</button></div>
+  </div></div>`;
+  const close = () => { host.innerHTML = ""; };
+  $("#rn-cancel", host).onclick = close;
+  $("#rn-reset", host).onclick = async () => {
+    await invoke("save_settings", { settings: { ...S.settings, videoFolder: "Video", photoFolder: "Photo", audioFolder: "Audio", materialFolder: "MATERIAL", splitMaterial: true, groupByDevice: true, materialNames: {} } });
+    close();
+  };
+  $("#rn-save", host).onclick = async () => {
+    const materialNames = {};
+    host.querySelectorAll("[data-cat]").forEach((i) => { materialNames[i.dataset.cat] = i.value.trim(); });
+    await invoke("save_settings", { settings: { ...S.settings,
+      videoFolder: $("#rn-video", host).value.trim() || "Video", photoFolder: $("#rn-photo", host).value.trim() || "Photo",
+      audioFolder: $("#rn-audio", host).value.trim() || "Audio", materialFolder: $("#rn-material", host).value.trim() || "MATERIAL",
+      splitMaterial: $("#rn-split", host).checked, groupByDevice: $("#rn-dev", host).checked, materialNames } });
+    close();
+    if (route.view === "job" && J) pushForm(J.job, true);
+  };
 }
 
 // MARK: boot

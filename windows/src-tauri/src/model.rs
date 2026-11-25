@@ -53,6 +53,10 @@ pub struct Settings {
     pub video_folder: String,
     pub photo_folder: String,
     pub audio_folder: String,
+    pub material_folder: String,
+    pub split_material: bool,
+    pub group_by_device: bool,
+    pub material_names: HashMap<String, String>,
     pub skip_existing: bool,
     pub check_mode: CheckMode,
     pub cloud_enabled: bool,
@@ -79,6 +83,10 @@ impl Default for Settings {
             video_folder: "Video".into(),
             photo_folder: "Photo".into(),
             audio_folder: "Audio".into(),
+            material_folder: "MATERIAL".into(),
+            split_material: true,
+            group_by_device: true,
+            material_names: HashMap::new(),
             skip_existing: true,
             check_mode: CheckMode::Thorough,
             cloud_enabled: false,
@@ -96,6 +104,18 @@ impl Default for Settings {
 }
 
 impl Settings {
+    pub fn asset_layout(&self) -> AssetLayout {
+        let f = crate::util::clean_name(&self.material_folder);
+        let names = ASSET_CATEGORIES
+            .iter()
+            .map(|(k, d)| {
+                let n = crate::util::clean_name(self.material_names.get(*k).map(String::as_str).unwrap_or(""));
+                (k.to_string(), if n.is_empty() { d.to_string() } else { n })
+            })
+            .collect();
+        AssetLayout { folder: if f.is_empty() { "MATERIAL".into() } else { f }, split: self.split_material, by_device: self.group_by_device, names }
+    }
+
     pub fn kind_folder(&self, k: FileKind) -> Option<&str> {
         match k {
             FileKind::Video => Some(&self.video_folder),
@@ -103,6 +123,47 @@ impl Settings {
             FileKind::Audio => Some(&self.audio_folder),
             _ => None,
         }
+    }
+}
+
+/// Asset categories inside MATERIAL: (key, default folder name).
+pub const ASSET_CATEGORIES: &[(&str, &str)] = &[
+    ("video", "Video"),
+    ("photo", "Photo"),
+    ("audio", "Audio"),
+    ("graphics", "Graphics"),
+    ("documents", "Documents"),
+    ("fonts", "Fonts"),
+    ("projectFiles", "Project Files"),
+    ("archives", "Archives"),
+    ("other", "Other"),
+];
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssetLayout {
+    pub folder: String,
+    pub split: bool,
+    pub by_device: bool,
+    pub names: HashMap<String, String>,
+}
+
+impl AssetLayout {
+    /// MATERIAL / Video / iPhone 15 Pro / <the file's own relative path>
+    pub fn rel(&self, path: &std::path::Path, rel: &str) -> String {
+        let mut parts = vec![self.folder.clone()];
+        if self.split {
+            let anchor = crate::scanner::sidecar_partner(path).unwrap_or_else(|| path.to_path_buf());
+            let c = crate::scanner::asset_category(&anchor);
+            parts.push(self.names.get(c).cloned().unwrap_or_else(|| c.to_string()));
+            if self.by_device && (c == "video" || c == "photo") {
+                if let Some(d) = crate::scanner::device_for(&anchor) {
+                    parts.push(crate::util::clean_name(&d));
+                }
+            }
+        }
+        parts.push(rel.to_string());
+        parts.into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("/")
     }
 }
 
@@ -163,6 +224,8 @@ pub struct OffloadSpec {
     pub check_mode: CheckMode,
     pub cloud: Option<CloudSpec>,
     pub mirror_prefix: Option<String>,
+    #[serde(default)]
+    pub assets: Option<AssetLayout>,
 }
 
 impl OffloadSpec {
@@ -177,6 +240,9 @@ impl OffloadSpec {
     pub fn target_rel(&self, f: &CardFile, routed: FileKind) -> String {
         if let Some(m) = &self.mirror_prefix {
             return if m.is_empty() { f.rel.clone() } else { format!("{m}/{}", f.rel) };
+        }
+        if let Some(a) = &self.assets {
+            return [self.project_rel(), a.rel(std::path::Path::new(&f.path), &f.rel)].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("/");
         }
         let mut parts = vec![self.project_rel()];
         if self.separate_by_type {

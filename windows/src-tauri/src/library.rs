@@ -187,8 +187,12 @@ pub fn downloads(source: &str, days: u32) -> Vec<DownloadItem> {
 /// Copies items into Project/<subfolder>, verified. Originals go to the Recycle Bin only when asked.
 pub fn copy_downloads(settings: &Settings, items: &[String], project: &str, subfolder: &str, move_originals: bool) -> Result<String, String> {
     let primary = settings.primary_root.clone().ok_or("Choose a main folder first")?;
-    let sub = if util::clean_name(subfolder).is_empty() { "Assets".to_string() } else { util::clean_name(subfolder) };
-    let dest = Path::new(&primary).join(project).join(&sub);
+    let mut layout = settings.asset_layout();
+    if !util::clean_name(subfolder).is_empty() {
+        layout.folder = util::clean_name(subfolder);
+    }
+    let sub = layout.folder.clone();
+    let project_dir = Path::new(&primary).join(project);
     let mut copied = vec![];
     let mut failed = vec![];
     for it in items {
@@ -201,7 +205,7 @@ pub fn copy_downloads(settings: &Settings, items: &[String], project: &str, subf
         };
         let mut ok = true;
         for (src, rel) in sources {
-            let target = dest.join(&rel);
+            let target = project_dir.join(layout.rel(&src, &rel));
             if target.exists() {
                 if let (Ok(a), Ok(b)) = (util::hash_file(&src, None, |_| {}), util::hash_file(&target, None, |_| {})) {
                     if a == b {
