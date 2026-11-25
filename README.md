@@ -1,3 +1,5 @@
+<img src="docs/icon.png" alt="BCKUP icon" width="96">
+
 # BCKUP
 
 Verified camera card offloads for macOS and Windows.
