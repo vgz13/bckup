@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BCKUP</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="side">
+      <div class="scroll" id="sidebar"></div>
+      <div class="foot">
+        <button type="button" class="linkbtn" id="btn-source"></button>
+        <button type="button" class="linkbtn" id="btn-settings"></button>
+      </div>
+    </aside>
+    <main class="main">
+      <div class="content" id="content"><div class="inner" id="view"></div></div>
+      <div class="bar hidden" id="bar"></div>
+    </main>
+  </div>
+  <div class="drop hidden" id="drop"><span>Drop here to copy a card, folder or files</span></div>
+  <div id="overlay"></div>
+  <script src="common.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

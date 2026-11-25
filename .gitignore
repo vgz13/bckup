@@ -1,0 +1,13 @@
+.DS_Store
+
+# macOS app (Swift)
+mac/.build/
+mac/build/
+
+# Windows app (Tauri)
+windows/node_modules/
+windows/src-tauri/target/
+windows/src-tauri/gen/
+windows/dist/
+windows/src-tauri/resources/rclone.exe
+windows/src-tauri/resources/rclone

@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BCKUP</title>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    body { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; height: 100dvh; display: flex; flex-direction: column; }
+    .sec { padding: 14px 16px; }
+    .sec + .sec { border-top: 1px solid var(--line); }
+    .notice { background: rgba(232,160,48,.14); padding: 10px 14px; display: flex; gap: 8px; align-items: flex-start; font-size: 13px; }
+    .notice .t { flex: 1; }
+    .scrollarea { flex: 1; overflow-y: auto; }
+    .foot { border-top: 1px solid var(--line); padding: 9px 16px; display: flex; align-items: center; gap: 12px; }
+    .plug { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 2px 0; }
+    .plug .n { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  </style>
+</head>
+<body>
+  <div class="scrollarea" id="panel"></div>
+  <div class="foot">
+    <button type="button" class="link" id="p-open">Open BCKUP</button>
+    <span style="flex:1"></span>
+    <button type="button" class="link" id="p-quit" style="color:var(--muted)">Quit</button>
+    <button type="button" class="link" id="p-close">Close</button>
+  </div>
+  <div id="overlay"></div>
+  <script src="common.js"></script>
+  <script>
+    let S = null;
+    async function render() {
+      S = await invoke("get_state");
+      let h = "";
+      for (const n of S.notices) h += `<div class="notice"><span class="orange">!</span><span class="t">${esc(n.text)}</span><button type="button" class="btn small" data-dismiss="${esc(n.id)}">OK</button></div>`;
+      if (!S.settings.primaryRoot) {
+        h += `<div class="sec"><div style="font-weight:600">BCKUP isn't set up yet</div><div class="muted small">Choose a main folder for your footage first.</div></div>`;
+      } else if (!S.cards.length) {
+        h += `<div class="sec"><div style="font-weight:600">No card</div><div class="muted small">Plug in a camera card and BCKUP checks it right away.</div></div>`;
+      } else {
+        for (const c of S.cards) {
+          const j = S.jobs.find((x) => x.source === c.path) || { source: c.path, name: c.name, statusText: "Reading the card…" };
+          h += `<div class="sec">${statusBlock(j, true)}</div>`;
+        }
+      }
+      if (S.plugged.length) {
+        h += `<div class="sec"><div class="small faint" style="margin-bottom:4px">Also plugged in</div>${S.plugged.map(([n, r]) => `<div class="plug"><span class="muted">${icon("drive", 14)}</span><span class="n">${esc(n)}</span><span class="${r === "Working drive" || r === "Backup drive" ? "" : "muted"}">${esc(r)}</span></div>`).join("")}</div>`;
+      }
+      const el = document.getElementById("panel");
+      el.innerHTML = h;
+      el.querySelectorAll("[data-dismiss]").forEach((b) => (b.onclick = () => invoke("dismiss_notice", { id: b.dataset.dismiss })));
+      bindStatusActions(el, async (src) => {
+        await T.event.emit("open-view", { view: "job", source: src });
+        invoke("show_main");
+      });
+    }
+    document.getElementById("p-open").onclick = () => invoke("show_main");
+    document.getElementById("p-close").onclick = () => invoke("hide_panel");
+    document.getElementById("p-quit").onclick = () => invoke("quit");
+    addEventListener("keydown", (e) => { if (e.key === "Escape") invoke("hide_panel"); });
+    listen("state", render);
+    render();
+  </script>
+</body>
+</html>
