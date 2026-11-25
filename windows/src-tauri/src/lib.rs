@@ -566,6 +566,7 @@ struct StateView {
     connect_task: TaskState,
     busy_percent: Option<u64>,
     test_auto: bool,
+    test_view: Option<String>,
 }
 
 fn role_of(s: &Settings, vol: &drives::Volume) -> String {
@@ -589,7 +590,7 @@ fn get_state(st: State<Shared>) -> StateView {
     let is_dest = |v: &drives::Volume| dest_vols.contains(&v.path.trim_end_matches(['\\', '/']).to_lowercase());
     let cards: Vec<drives::Volume> = vols.iter().filter(|v| v.is_card && !is_dest(v) && !s.hidden_volumes.contains(&v.id)).cloned().collect();
     let other: Vec<drives::Volume> = vols.iter().filter(|v| !v.is_card && !v.system && !is_dest(v) && !s.hidden_volumes.contains(&v.id)).cloned().collect();
-    let plugged = vols.iter().filter(|v| !cards.contains(v)).map(|v| (v.name.clone(), role_of(&s, v))).collect();
+    let plugged = vols.iter().filter(|v| !cards.contains(v) && !s.hidden_volumes.contains(&v.id)).map(|v| (v.name.clone(), role_of(&s, v))).collect();
     let mut destinations = vec![];
     if let Some(p) = &s.primary_root {
         let sp = util::disk_space(p);
@@ -652,6 +653,7 @@ fn get_state(st: State<Shared>) -> StateView {
         connect_task: st.connect_task.lock().unwrap().clone(),
         busy_percent,
         test_auto: std::env::var("BCKUP_TEST_AUTO").is_ok(),
+        test_view: std::env::var("BCKUP_TEST_VIEW").ok(),
     }
 }
 
@@ -863,11 +865,18 @@ fn run_quick_check(st: State<Shared>, app: AppHandle, source: String, thorough: 
     quick_check(app, st.inner().clone(), source, thorough);
 }
 
+fn refresh_in_background(app: &AppHandle, st: &Shared) {
+    let (app, st) = (app.clone(), st.clone());
+    std::thread::spawn(move || refresh_volumes(&app, &st, false));
+}
+
 #[tauri::command]
-fn eject(st: State<Shared>, app: AppHandle, source: String) -> Result<(), String> {
-    drives::eject(&source)?;
+async fn eject(app: AppHandle, source: String) -> Result<(), String> {
+    let src = source.clone();
+    tauri::async_runtime::spawn_blocking(move || drives::eject(&src)).await.map_err(|e| e.to_string())??;
+    let st = app.state::<Shared>().inner().clone();
     st.jobs.lock().unwrap().remove(&source);
-    refresh_volumes(&app, &st, false);
+    refresh_in_background(&app, &st);
     Ok(())
 }
 
@@ -875,7 +884,7 @@ fn eject(st: State<Shared>, app: AppHandle, source: String) -> Result<(), String
 fn save_settings(st: State<Shared>, app: AppHandle, settings: Settings) {
     *st.settings.lock().unwrap() = settings.clone();
     save_settings_file(&settings);
-    refresh_volumes(&app, &st, false);
+    refresh_in_background(&app, st.inner());
     emit(&app);
 }
 
@@ -1458,16 +1467,19 @@ pub fn run() {
                 let _ = handle.emit("select-source", key);
             }
 
+            // Reading drives can block (a sleeping disk, a permission prompt), so never do it on the UI thread.
             let st = shared.clone();
-            refresh_volumes(&handle, &st, false);
-            let cards: Vec<String> = st.volumes.lock().unwrap().iter().filter(|v| v.is_card).map(|v| v.path.clone()).collect();
-            for c in cards {
-                start_scan(handle.clone(), st.clone(), c);
-            }
             let h3 = handle.clone();
-            std::thread::spawn(move || loop {
-                std::thread::sleep(std::time::Duration::from_secs(2));
-                refresh_volumes(&h3, &st, true);
+            std::thread::spawn(move || {
+                refresh_volumes(&h3, &st, false);
+                let cards: Vec<String> = st.volumes.lock().unwrap().iter().filter(|v| v.is_card).map(|v| v.path.clone()).collect();
+                for c in cards {
+                    start_scan(h3.clone(), st.clone(), c);
+                }
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    refresh_volumes(&h3, &st, true);
+                }
             });
             Ok(())
         })

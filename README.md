@@ -4,6 +4,8 @@ Verified camera card offloads for macOS and Windows.
 
 Plug in a card and BCKUP checks whether its contents are already on your drives. It copies to the main folder and every backup drive at once, reads each copy back from disk and checks it with xxHash64, skips files that are already there, and tells you when a card is **Safe to format**.
 
+![A copied card marked Safe to format](docs/screenshots/mac-result.png)
+
 | | macOS | Windows |
 |---|---|---|
 | Folder | [`mac/`](mac) | [`windows/`](windows) |
@@ -17,6 +19,30 @@ Both apps share the same rules and folder layout, so a drive filled by one is un
 Main folder / Project + date / Video · Photo · Audio / Roll / original card structure
                              / _BCKUP Reports / <roll> <date>.txt + .csv
 ```
+
+## Screenshots
+
+Shown with demo cards and drives on macOS. The Windows app has the same screens, with a tray icon instead of the menu bar.
+
+**When a card goes in**, a panel opens from the menu bar and says whether the card is already copied.
+
+<img src="docs/screenshots/mac-menubar-panel.png" alt="Menu bar panel for a new card" width="420">
+
+**Set up the copy.** Pick the project and roll, see exactly which folders will be made, and choose the drives.
+
+![Card screen with project, destinations and options](docs/screenshots/mac-card.png)
+
+**Check first.** BCKUP compares the card with every destination before copying anything, and shows what's new and what's already there.
+
+![Check result before copying](docs/screenshots/mac-check.png)
+
+**Projects** shows every project on the working drive and whether each backup drive has all of it, even when that drive isn't plugged in.
+
+![Projects with backup status](docs/screenshots/mac-projects.png)
+
+**Sort downloads** copies logos, music, briefs and client footage into a project's Assets folder.
+
+![Sort downloads](docs/screenshots/mac-downloads.png)
 
 ## Features
 

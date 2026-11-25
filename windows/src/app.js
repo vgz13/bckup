@@ -702,7 +702,9 @@ async function renderSettings() {
 
 // Test hook (BCKUP_TEST_AUTO): open the first card, name the project, check, then copy.
 let autoStep = 0;
+let testViewDone = false;
 async function testAuto() {
+  if (S.testView && !testViewDone) { testViewDone = true; go(S.testView); return; }
   if (!S.testAuto || !S.cards.length) return;
   if (autoStep === 0) { autoStep = 1; go("job", S.cards[0].path); return; }
   if (!J || !J.job.scan) return;

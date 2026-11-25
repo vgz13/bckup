@@ -174,7 +174,7 @@ final class AppState: ObservableObject {
 
     /// Every mounted drive with what BCKUP uses it for (cards are listed separately).
     func pluggedDrives() -> [(name: String, role: String, url: URL)] {
-        let keys: [URLResourceKey] = [.volumeNameKey, .volumeIsRootFileSystemKey, .volumeIsEjectableKey, .volumeIsRemovableKey, .volumeIsInternalKey]
+        let keys: [URLResourceKey] = [.volumeNameKey, .volumeIsRootFileSystemKey, .volumeIsEjectableKey, .volumeIsRemovableKey, .volumeIsInternalKey, .volumeUUIDStringKey]
         let urls = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: keys, options: [.skipHiddenVolumes]) ?? []
         let cardPaths = Set(cards.map { $0.url.standardizedFileURL.path })
         var out: [(String, String, URL)] = []
@@ -183,6 +183,7 @@ final class AppState: ObservableObject {
             guard rv.volumeIsEjectable == true || rv.volumeIsRemovable == true || rv.volumeIsInternal == false else { continue }
             let path = u.standardizedFileURL.path
             if cardPaths.contains(path) { continue }
+            if settings.hiddenVolumes.contains(rv.volumeUUIDString ?? path) { continue }
             let name = rv.volumeName ?? u.lastPathComponent
             func on(_ root: String?) -> Bool { root.map { $0 == path || $0.hasPrefix(path + "/") } ?? false }
             let role: String
