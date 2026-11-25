@@ -11,7 +11,7 @@ Plug in a card and BCKUP checks whether its contents are already on your drives.
 | Folder | [`mac/`](mac) | [`windows/`](windows) |
 | Built with | Swift / SwiftUI | Tauri 2 (Rust + HTML/JS) |
 | Build | `cd mac && ./build.sh` | see [`windows/README.md`](windows/README.md) |
-| Download | Releases: `BCKUP-mac-*.zip` | Releases: `BCKUP_*_x64-setup.exe` |
+| Download | [`BCKUP-mac-1.0.zip`](https://github.com/vgz13/bckup/releases/latest/download/BCKUP-mac-1.0.zip) | [`BCKUP-Setup.exe`](https://github.com/vgz13/bckup/releases/latest/download/BCKUP-Setup.exe) |
 
 Both apps share the same rules and folder layout, so a drive filled by one is understood by the other:
 
@@ -60,4 +60,4 @@ Shown with demo cards and drives on macOS. The Windows app has the same screens,
 Installers are attached to the GitHub Releases. Neither is code-signed yet:
 
 - macOS: right-click `BCKUP.app` → Open the first time.
-- Windows: if SmartScreen says "Windows protected your PC", click More info → Run anyway.
+- Windows: double-click `BCKUP-Setup.exe`. There are no questions to answer: it installs for your user account (no admin rights), adds Start menu and desktop shortcuts, and opens BCKUP. If SmartScreen says "Windows protected your PC", click More info → Run anyway. Uninstall from Settings → Apps.

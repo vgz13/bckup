@@ -22,7 +22,9 @@ LC_ALL=en_US.UTF-8 XWIN_ACCEPT_LICENSE=1 npx tauri build --runner cargo-xwin --t
 
 `LC_ALL=en_US.UTF-8` matters: Homebrew's makensis crashes (`std::bad_alloc`) without a UTF-8 locale.
 
-The installer ends up in `src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/`.
+The installer ends up in `src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/` (published as `BCKUP-Setup.exe`).
+
+The installer is one-click: `src-tauri/windows/installer.nsi` is Tauri's own NSIS template (from @tauri-apps/cli 2.9.6) with two changes, marked `BCKUP:`. It skips every page and only shows progress, and it opens BCKUP when it's done. `/S` still installs silently.
 
 ## Build on a Windows PC
 
